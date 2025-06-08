@@ -1,0 +1,29 @@
+###合并分组
+import pandas as pd
+
+# 原始文件路径
+input_path = r"../filtered_data.xlsx"
+# 输出文件路径
+output_path = r"../filtered_data_grouped.xlsx"
+
+# 读取原始数据
+df = pd.read_excel(input_path)
+
+# 定义合并映射规则
+status_map = {
+    'positive_mild': 'positive',
+    'positive_moderate': 'positive',
+    'positive_asymp': 'positive',
+    'recovered_full': 'non_positive',
+    'healthy': 'non_positive',
+    'no_resp_illness_exposed': 'non_positive',
+    'under_validation': 'uncertain',
+    'resp_illness_not_identified': 'uncertain'
+}
+
+# 应用映射，生成新列
+df['covid_status_grouped'] = df['covid_status'].map(status_map)
+# 导出
+df.to_excel(output_path, index=False)
+
+print(f"✅ 成功导出新表格至：{output_path}")
