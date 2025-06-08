@@ -15,7 +15,7 @@
 
 ## 数据来源
 
-本项目所用音频数据来自 [Coswara 项目](https://github.com/iiscleap/Coswara-Data)，由印度IISc团队公开发布，遵循 CC BY-SA 4.0 许可协议。
+本项目所用音频数据来自 [Coswara 项目](https://github.com/iiscleap/Coswara-Data)，由印度IISc团队公开发布，使用编号为20220116、20220224音频数据，遵循 CC BY-SA 4.0 许可协议。
 本研究中，ResNet50 被用作基线图像分类模型。模型架构参考自 TensorFlow 官方维护的 [Models Repository](https://github.com/tensorflow/models/tree/master/research/slim)，并加载其 ImageNet 预训练参数。
 
 ## 环境要求
