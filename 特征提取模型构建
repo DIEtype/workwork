@@ -44,7 +44,7 @@ X_structured, X_spectrogram, y, subject_ids = [], [], [], []
 
 for folder_name in tqdm(os.listdir(data_dir)):
     folder_path = os.path.join(data_dir, folder_name)
-    audio_path = os.path.join(folder_path, "cough-heavy.wav")
+    audio_path = os.path.join(folder_path, "cough-heavy.wav") # 仅使用-heavy咳嗽
 
     if os.path.isdir(folder_path) and os.path.isfile(audio_path):
         if folder_name in label_dict:
