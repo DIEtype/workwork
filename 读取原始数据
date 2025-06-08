@@ -1,0 +1,29 @@
+import os
+import pandas as pd
+
+# 设置路径
+base_dir = '../workwork'
+csv_path = os.path.join(base_dir, 'combined_data.csv')
+
+# 读取CSV文件
+df = pd.read_csv(csv_path)
+
+# 获取所有文件夹名作为ID列表
+folder_ids = [
+    name for name in os.listdir(base_dir)
+    if os.path.isdir(os.path.join(base_dir, name))
+]
+
+# 取得表格中的ID列名（默认为第一列）
+id_column = df.columns[0]
+
+# 提取匹配的记录
+df_matched = df[df[id_column].astype(str).isin(folder_ids)]
+
+# 输出路径
+output_path = os.path.join(base_dir, 'filtered_data.csv')
+
+# 写入新CSV
+df_matched.to_csv(output_path, index=False, encoding='utf-8-sig')
+
+print(f"✅ 成功生成过滤后的数据表格：{output_path}")
