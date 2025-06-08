@@ -4,12 +4,21 @@ library(Hmisc)
 library(readxl)
 library(table1)
 library(flextable)
+library(openxl)
 
+#修改格式
+data0 <- read.csv("../filtered_data.csv")
+data0 <- data0 %>%
+  rename(age = a) %>%
+  rename(gender = g)
+write.xlsx(data0, 'filtered_data.xlsx')
+
+# 基础数据描述性统计
 data1 <- read_xlsx("../filtered_data.xlsx")
 tab <- table1(~age+gender|covid_status, data = data1)
 t1flex(tab) %>% save_as_html(path="../description_table.html")
 
-
+# 特征提取后数据描述性统计
 data2 <- read_xlsx("../filtered_data_matched.xlsx")
 data2 <- filter(data2, data2$covid_status_grouped != 'uncertain') # 删除不确定结局样本
 tab2 <- table1(~age+gender|covid_status_grouped, data = data2)
