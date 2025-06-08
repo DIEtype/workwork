@@ -20,9 +20,9 @@
 
 ## 环境要求
 
-- Python 3.10+
+- Python 3.10+ / R
 - TensorFlow / Keras
 - scikit-learn
 - librosa
 - matplotlib, numpy 等
-
+- table1，flextable，Hmisc等
