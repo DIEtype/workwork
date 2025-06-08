@@ -1,0 +1,334 @@
+import os
+import librosa
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+
+# ===== 路径设置 =====
+data_dir = "../"
+label_path = os.path.join(data_dir, "filtered_data_grouped.xlsx")
+
+# ===== 标签读取 =====
+df_labels = pd.read_excel(label_path)
+df_labels['id'] = df_labels['id'].astype(str)
+label_dict = dict(zip(df_labels['id'], df_labels['covid_status_grouped']))
+
+# ===== 特征提取函数 =====
+def extract_structured_features(file_path):
+    y, sr = librosa.load(file_path, sr=16000)
+    f0 = librosa.yin(y, fmin=50, fmax=500)
+    mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
+    features = [
+        np.mean(librosa.zero_crossings(y)),
+        np.mean(np.abs(y)),
+        np.mean(librosa.feature.rms(y=y)),
+        np.mean(f0),
+        np.std(f0)
+    ]
+    for mfcc in mfccs:
+        features.append(np.mean(mfcc))
+        features.append(np.std(mfcc))
+    return np.array(features)
+
+def extract_mel_spectrogram(file_path):
+    y, sr = librosa.load(file_path, sr=16000)
+    y = librosa.util.fix_length(y, size = sr * 3)
+    mel_spec = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128)
+    mel_db = librosa.power_to_db(mel_spec, ref=np.max)
+    mel_db_resized = librosa.util.pad_center(mel_db, size=224, axis=1)[:128, :224]
+    mel_db_resized = np.expand_dims(mel_db_resized, axis=-1)
+    return mel_db_resized
+
+# ===== 主处理流程 =====
+X_structured, X_spectrogram, y, subject_ids = [], [], [], []
+
+for folder_name in tqdm(os.listdir(data_dir)):
+    folder_path = os.path.join(data_dir, folder_name)
+    audio_path = os.path.join(folder_path, "cough-heavy.wav")
+
+    if os.path.isdir(folder_path) and os.path.isfile(audio_path):
+        if folder_name in label_dict:
+            try:
+                struct_feat = extract_structured_features(audio_path)
+                spec_img = extract_mel_spectrogram(audio_path)
+
+                X_structured.append(struct_feat)
+                X_spectrogram.append(spec_img)
+                y.append(label_dict[folder_name])
+                subject_ids.append(folder_name)
+            except Exception as e:
+                print(f"[ERROR] {folder_name}: {e}")
+
+# ===== 数组转换 =====
+X_structured = np.array(X_structured)
+X_spectrogram = np.array(X_spectrogram)
+y = np.array(y)
+subject_ids = np.array(subject_ids)
+
+# ===== 输出信息 =====
+print(f"✅ 成功提取样本数: {len(y)}")
+print(f"✅ 结构化特征维度: {X_structured.shape}")
+print(f"✅ 频谱图尺寸: {X_spectrogram.shape}")
+
+# ===== 重新构建列表 =====
+full_label_path = os.path.join(data_dir, "filtered_data_grouped.xlsx")
+filtered_label_output = os.path.join(data_dir, "filtered_data_matched.xlsx")
+
+df_full = pd.read_excel(full_label_path)
+df_full['id'] = df_full['id'].astype(str)
+
+df_retained = pd.DataFrame({'id': subject_ids})
+df_retained['id'] = df_retained['id'].astype(str)
+
+df_matched = df_full[df_full['id'].isin(df_retained['id'])].copy()
+df_matched.to_excel(filtered_label_output, index=False)
+
+print(f"✅ 成功样本标签表已保存至: {filtered_label_output}")
+print(f"共保留样本: {df_matched.shape[0]} / {df_full.shape[0]}")
+
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense, Concatenate, Conv2D, MaxPooling2D, GlobalAveragePooling2D, Flatten, Dropout, LayerNormalization, MultiHeadAttention, Add
+from sklearn.model_selection import train_test_split
+
+# ===== 标签编码 =====
+label_map = {
+    'non_positive': 0,        # 对照组
+    'positive': 1,            # 确诊阳性组
+    'uncertain': 2     # 未确认组
+}
+
+y_encoded = np.array([label_map[label] for label in y])
+
+# ===== 去除“未确认组”样本 =====
+mask = y_encoded != 2
+X_structured_filtered = X_structured[mask]
+X_spectrogram_filtered = X_spectrogram[mask]
+y_filtered = y_encoded[mask]
+
+# ===== 划分训练集与验证集（此时y已为数字）=====
+X_train_s, X_val_s, X_train_img, X_val_img, y_train, y_val = train_test_split(
+    X_structured_filtered, X_spectrogram_filtered, y_filtered, 
+    test_size=0.2, random_state=42, stratify=y_filtered
+)
+
+
+# 简单 Transformer block
+def transformer_block(x, heads=4, dim=128):
+    attn_output = MultiHeadAttention(num_heads=heads, key_dim=dim)(x, x)
+    x = Add()([x, attn_output])
+    x = LayerNormalization()(x)
+    return x
+
+# 构建融合模型
+def build_fusion_model(struct_dim=31):
+    # MLP 分支
+    input_struct = Input(shape=(struct_dim,))
+    x1 = Dense(64, activation='relu')(input_struct)
+    x1 = Dense(128, activation='relu')(x1)
+
+    # CNN + Transformer 分支
+    input_img = Input(shape=(128, 224, 1))
+    x2 = Conv2D(32, (3, 3), activation='relu')(input_img)
+    x2 = MaxPooling2D((2, 2))(x2)
+    x2 = Conv2D(64, (3, 3), activation='relu')(x2)
+    x2 = GlobalAveragePooling2D()(x2)
+    x2 = Dense(128)(x2)
+    x2 = Dropout(0.2)(x2)
+    x2 = transformer_block(x2[:, None, :])
+    x2 = Flatten()(x2)
+
+    # 融合
+    merged = Concatenate()([x1, x2])
+    x = Dense(64, activation='relu')(merged)
+    x = Dropout(0.2)(x)
+    output = Dense(1, activation='sigmoid')(x)
+
+    model = Model(inputs=[input_struct, input_img], outputs=output)
+    return model
+
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+from sklearn.metrics import classification_report, roc_auc_score
+
+# 构建与编译模型
+model = build_fusion_model(struct_dim=X_train_s.shape[1])
+model.compile(optimizer=Adam(1e-4), loss='binary_crossentropy', metrics=['accuracy'])
+
+# 训练
+history = model.fit(
+    [X_train_s, X_train_img], y_train,
+    validation_data=([X_val_s, X_val_img], y_val),
+    epochs=50,
+    batch_size=32,
+    callbacks=[EarlyStopping(patience=5, restore_best_weights=True)],
+    verbose=1
+)
+
+# 评估
+y_pred_proba = model.predict([X_val_s, X_val_img])
+y_pred = (y_pred_proba >= 0.5).astype(int)
+
+print("\n[模型评估]")
+print(classification_report(y_val, y_pred, digits=3))
+print(f"AUC: {roc_auc_score(y_val, y_pred_proba):.4f}")
+
+import matplotlib.pyplot as plt
+
+plt.plot(history.history['loss'], label='train_loss')
+plt.plot(history.history['val_loss'], label='val_loss')
+plt.xlabel("Epochs")
+plt.ylabel("Loss")
+plt.legend()
+plt.title("Training loss curve")
+plt.show()
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+
+# 混淆矩阵计算
+cm = confusion_matrix(y_val, y_pred)
+
+# 可视化
+plt.figure(figsize=(6, 5))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+            xticklabels=['non-positive(0)', 'positive(1)'], 
+            yticklabels=['non-positive(0)', 'positive(1)'])
+plt.xlabel('Predicted Label')
+plt.ylabel('Real Label')
+plt.title('Confusion Matrix')
+plt.tight_layout()
+plt.show()
+
+from sklearn.metrics import roc_curve, auc
+
+# 计算ROC曲线
+fpr, tpr, thresholds = roc_curve(y_val, y_pred_proba)
+roc_auc = auc(fpr, tpr)
+
+# 绘图
+plt.figure(figsize=(6, 5))
+plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.3f})')
+plt.plot([0, 1], [0, 1], color='gray', linestyle='--', label='random sort')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC curve')
+plt.legend(loc="lower right")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+# ===== 构建 ResNet 模型 =====
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.layers import GlobalAveragePooling2D, Concatenate
+from tensorflow.keras.models import Model
+
+resnet_weights_path = '/mnt/e/coughtest/cough test00/resnet50_weights_tf_dim_ordering_tf_kernels_notop.h5'
+def build_resnet_model(input_shape=(128, 224, 1)):
+    input_img = Input(shape=input_shape)
+    x = Concatenate(axis=-1)([input_img, input_img, input_img])  # 单通道复制为3通道
+
+    base_model = ResNet50(include_top=False, weights=resnet_weights_path, input_tensor=x)
+    for layer in base_model.layers:
+        layer.trainable = False  # 冻结预训练层
+
+    x = base_model.output
+    x = GlobalAveragePooling2D()(x)
+    x = Dense(128, activation='relu')(x)
+    x = Dropout(0.3)(x)
+    output = Dense(1, activation='sigmoid')(x)
+    model = Model(inputs=input_img, outputs=output)
+    return model
+
+# ===== 训练 ResNet 模型 =====
+resnet_model = build_resnet_model(input_shape=X_train_img.shape[1:])
+resnet_model.compile(optimizer=Adam(1e-4), loss='binary_crossentropy', metrics=['accuracy'])
+
+resnet_history = resnet_model.fit(
+    X_train_img, y_train,
+    validation_data=(X_val_img, y_val),
+    epochs=50,
+    batch_size=32,
+    callbacks=[EarlyStopping(patience=5, restore_best_weights=True)],
+    verbose=1
+)
+
+# ===== 评估 ResNet 模型 =====
+y_pred_resnet_proba = resnet_model.predict(X_val_img)
+y_pred_resnet = (y_pred_resnet_proba >= 0.5).astype(int)
+
+print("\n[ResNet模型评估]")
+print(classification_report(y_val, y_pred_resnet, digits=3))
+print(f"ResNet AUC: {roc_auc_score(y_val, y_pred_resnet_proba):.4f}")
+
+# ===== 对比图：融合 vs ResNet =====
+from sklearn.metrics import f1_score
+
+# 性能汇总
+resnet_accuracy = np.mean(y_pred_resnet == y_val)
+resnet_f1 = f1_score(y_val, y_pred_resnet)
+resnet_auc = roc_auc_score(y_val, y_pred_resnet_proba)
+
+fusion_accuracy = np.mean(y_pred == y_val)
+fusion_f1 = f1_score(y_val, y_pred)
+fusion_auc = roc_auc_score(y_val, y_pred_proba)
+
+# === 1. 验证损失曲线对比 ===
+plt.figure(figsize=(8, 5))
+plt.plot(history.history['val_loss'], label='Fusion Val Loss', color='blue')
+plt.plot(resnet_history.history['val_loss'], label='ResNet Val Loss', color='orange')
+plt.xlabel("Epochs")
+plt.ylabel("Validation Loss")
+plt.title("Validation Loss : Fusion vs ResNet")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# === 2. ROC 曲线对比 ===
+fpr_fusion, tpr_fusion, _ = roc_curve(y_val, y_pred_proba)
+fpr_resnet, tpr_resnet, _ = roc_curve(y_val, y_pred_resnet_proba)
+
+plt.figure(figsize=(6, 5))
+plt.plot(fpr_fusion, tpr_fusion, label=f'Fusion (AUC={fusion_auc:.3f})', lw=2)
+plt.plot(fpr_resnet, tpr_resnet, label=f'ResNet (AUC={resnet_auc:.3f})', lw=2)
+plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC curve : Fusion vs ResNet50")
+plt.legend(loc="lower right")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+# === 3. 指标条形图 ===
+from sklearn.metrics import precision_score, recall_score
+
+# === 计算 Precision 和 Recall ===
+resnet_precision = precision_score(y_val, y_pred_resnet)
+resnet_recall = recall_score(y_val, y_pred_resnet)
+fusion_precision = precision_score(y_val, y_pred)
+fusion_recall = recall_score(y_val, y_pred)
+
+# === 3. 更新指标条形图 ===
+metrics_names = ['Accuracy', 'Precision', 'Recall', 'F1 Score', 'AUC']
+fusion_scores = [fusion_accuracy, fusion_precision, fusion_recall, fusion_f1, fusion_auc]
+resnet_scores = [resnet_accuracy, resnet_precision, resnet_recall, resnet_f1, resnet_auc]
+
+x = np.arange(len(metrics_names))
+width = 0.35
+
+plt.figure(figsize=(9, 5))
+plt.bar(x - width/2, fusion_scores, width, label='Fusion')
+plt.bar(x + width/2, resnet_scores, width, label='ResNet')
+plt.xticks(x, metrics_names)
+plt.ylim(0, 1.05)
+plt.ylabel("Score")
+plt.title("Evaluation Metrics: Fusion vs ResNet50")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
