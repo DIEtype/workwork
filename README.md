@@ -20,7 +20,8 @@
 
 ## 环境要求
 
-- Python 3.10+ / R
+- Python 3.10+
+- R 4.3.3+
 - TensorFlow / Keras
 - scikit-learn
 - librosa
