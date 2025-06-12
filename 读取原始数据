@@ -14,7 +14,7 @@ folder_ids = [
     if os.path.isdir(os.path.join(base_dir, name))
 ]
 
-# 取得表格中的ID列名（默认为第一列）
+# 取得表格中的ID列
 id_column = df.columns[0]
 
 # 提取匹配的记录
